@@ -159,7 +159,7 @@ void Host::doneWorking()
     if (!haveCapabilities())
         return;
 
-    // reset ioservice (cancels all timers and allows manually polling network, below)
+    // reset ioservice (allows manually polling network, below)
     m_ioService.reset();
 
     // shutdown acceptor
@@ -177,8 +177,8 @@ void Host::doneWorking()
     // stop capabilities (eth: stops syncing or block/tx broadcast)
     for (auto const& h : m_capabilities)
     {
-        h.second.first->onStopping();
-        h.second.second->cancel();
+        h.second.capability->onStopping();
+        h.second.backgroundWorkTimer->cancel();
     }
 
     // disconnect pending handshake, before peers, as a handshake may create a peer
@@ -323,7 +323,7 @@ void Host::startPeerSession(Public const& _id, RLP const& _rlp, unique_ptr<RLPXF
             if (itCap == m_capabilities.end())
                 return session->disconnect(IncompatibleProtocol);
 
-            auto capability = itCap->second.first;
+            auto capability = itCap->second.capability;
             session->registerCapability(capDesc, offset, capability);
 
             cnetlog << "New session for capability " << capDesc.first << "; idOffset: " << offset;
@@ -488,8 +488,8 @@ void Host::registerCapability(
         cwarn << "Capabilities must be registered before the network is started";
         return;
     }
-    m_capabilities[{_name, _version}] =
-        make_pair(_cap, unique_ptr<ba::steady_timer>{new ba::steady_timer{m_ioService}});
+    m_capabilities[{_name, _version}] = {
+        _cap, unique_ptr<ba::steady_timer>{new ba::steady_timer{m_ioService}}};
 }
 
 void Host::addPeer(NodeSpec const& _s, PeerType _t)
@@ -742,8 +742,8 @@ void Host::startedWorking()
 {
     // start capability threads (ready for incoming connections)
     for (auto const& h : m_capabilities)
-        h.second.first->onStarting();
-    
+        h.second.capability->onStarting();
+
     if (haveCapabilities())
     {
         // try to open acceptor (todo: ipv6)
@@ -1031,8 +1031,8 @@ void Host::scheduleCapabilityBackgroundWork(CapDesc const& _capDesc, function<vo
     if (cap == m_capabilities.end())
         BOOST_THROW_EXCEPTION(UnknownCapability());
 
-    ba::steady_timer* timer = cap->second.second.get();
-    timer->expires_from_now(chrono::milliseconds(cap->second.first->backgroundWorkInterval()));
+    auto timer = cap->second.backgroundWorkTimer.get();
+    timer->expires_from_now(chrono::milliseconds(cap->second.capability->backgroundWorkInterval()));
     timer->async_wait([_f](boost::system::error_code _ec) {
         if (!_ec)
             _f();
